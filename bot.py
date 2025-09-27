@@ -39,30 +39,34 @@ def load_memory(user_id, limit=5):
     c.execute("SELECT message, response FROM memory WHERE user_id=? ORDER BY rowid DESC LIMIT ?", (user_id, limit))
     rows = c.fetchall()
     conn.close()
-    return rows[::-1]  # return oldest first
+    return rows[::-1]  # oldest first
 
 # === HF CLIENT ===
 hf_client = InferenceClient(model=MODEL, token=HF_TOKEN)
 
-async def query_hf(user_prompt, history=[]):
+async def query_hf(user_prompt, history=[], username="user"):
     try:
-        # build chat-style messages
-        messages = []
+        # bot style: lowercase, bored, uninterested
+        messages = [
+            {"role": "system", "content": "you are a discord bot that always replies in lowercase, short, and with a bored tone. never use uppercase, emojis, or exclamation marks. act uninterested, like you don't really care."}
+        ]
+
+        # include chat history
         for (u, b) in history:
-            messages.append({"role": "user", "content": u})
+            messages.append({"role": "user", "content": f"{username}: {u}"})
             messages.append({"role": "assistant", "content": b})
 
-        messages.append({"role": "user", "content": user_prompt})
+        messages.append({"role": "user", "content": f"{username}: {user_prompt}"})
 
         response = hf_client.chat_completion(
             model=MODEL,
             messages=messages,
-            max_tokens=256
+            max_tokens=128
         )
 
-        return response.choices[0].message["content"]
+        return response.choices[0].message["content"].lower().strip()
     except Exception as e:
-        return f"⚠️ HF API error: {str(e)}"
+        return f"⚠️ hf api error: {str(e)}"
 
 # === DISCORD BOT ===
 intents = discord.Intents.default()
@@ -71,7 +75,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    print(f"✅ Logged in as {bot.user}")
+    print(f"✅ logged in as {bot.user}")
     init_db()
 
 @bot.event
@@ -85,7 +89,7 @@ async def on_message(message):
         prompt = message.content.replace(f"<@{bot.user.id}>", "").strip()
 
         history = load_memory(user_id)
-        reply = await query_hf(prompt, history)
+        reply = await query_hf(prompt, history, username)
 
         await message.channel.send(reply)
 
