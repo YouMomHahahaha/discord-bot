@@ -5,7 +5,7 @@ import requests
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
-MODEL = "microsoft/Phi-3-mini-4k-instruct"  # pick your model
+MODEL = "meta-llama/Llama-3.2-1B-Instruct"  # pick your model
 
 intents = discord.Intents.default()
 intents.message_content = True  # enable reading message text
