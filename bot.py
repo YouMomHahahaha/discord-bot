@@ -1,49 +1,67 @@
-import os
-import json
 import discord
 from discord.ext import commands
+import os
+import sqlite3
 from huggingface_hub import InferenceClient
 
-HF_TOKEN = os.getenv("HF_TOKEN")
+# Load tokens from env
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+HF_TOKEN = os.getenv("HF_TOKEN")
 
-MODEL = "mistralai/Mistral-7B-Instruct-v0.2"
+# Hugging Face client
+client_hf = InferenceClient("mistralai/Mistral-7B-Instruct-v0.3", token=HF_TOKEN)
 
-client_hf = InferenceClient(model=MODEL, token=HF_TOKEN)
-
+# Intents
 intents = discord.Intents.default()
 intents.messages = True
 intents.message_content = True
-intents.guilds = True
-intents.members = True
-
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-DB_FILE = "chat_memory.json"
+# --- SQLite Memory ---
+DB_FILE = "chat_memory.db"
 
-# Load DB
-if os.path.exists(DB_FILE):
-    with open(DB_FILE, "r", encoding="utf-8") as f:
-        chat_memory = json.load(f)
-else:
-    chat_memory = []
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS memory (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user TEXT,
+        msg TEXT
+    )
+    """)
+    conn.commit()
+    conn.close()
 
-def save_memory():
-    with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(chat_memory, f, ensure_ascii=False, indent=2)
+def add_message(user, msg):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("INSERT INTO memory (user, msg) VALUES (?, ?)", (user, msg))
+    conn.commit()
+    conn.close()
 
-def build_prompt(message):
-    # Take last 30 messages as "training context"
-    context = "\n".join([f"{m['username']}: {m['content']}" for m in chat_memory[-30:]])
-    return f"""
-This is a Discord server chat. People are friends, make jokes, and talk casually.
-The bot must act like one of them, matching their style and humor.
+def get_memory(limit=30):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT user, msg FROM memory ORDER BY id DESC LIMIT ?", (limit,))
+    rows = c.fetchall()
+    conn.close()
+    return list(reversed(rows))
 
-Server conversation so far:
-{context}
+init_db()
 
-{message.author.display_name}: {message.content}
-Bot:"""
+async def generate_reply(user, message):
+    add_message(user, message)
+
+    history = get_memory(30)
+    history_text = "\n".join([f"{u}: {m}" for u, m in history])
+    prompt = f"The following is a Discord server chat. Respond naturally and funny like one of them.\n\n{history_text}\nBot:"
+
+    try:
+        response = client_hf.text_generation(prompt, max_new_tokens=150, temperature=0.8)
+        return response.strip()
+    except Exception as e:
+        return f"⚠️ HF error: {e}"
 
 @bot.event
 async def on_ready():
@@ -51,33 +69,10 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    if message.author.bot:
+    if message.author == bot.user:
         return
-
-    # Log every message into DB
-    chat_memory.append({"username": message.author.display_name, "content": message.content})
-    save_memory()
-
-    # Only reply if bot is mentioned
-    if bot.user.mentioned_in(message):
-        prompt = build_prompt(message)
-
-        try:
-            response = client_hf.text_generation(
-                prompt,
-                max_new_tokens=200,
-                temperature=0.8,
-                do_sample=True
-            )
-            reply = response.strip()
-
-            # Save bot’s reply too
-            chat_memory.append({"username": "Bot", "content": reply})
-            save_memory()
-
-            await message.reply(reply)
-
-        except Exception as e:
-            await message.reply(f"⚠️ HF API error: {e}")
+    if bot.user.mentioned_in(message) or message.content.startswith("!"):
+        reply = await generate_reply(str(message.author), message.content)
+        await message.channel.send(reply)
 
 bot.run(DISCORD_TOKEN)
