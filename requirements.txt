@@ -1,2 +1,2 @@
 discord.py
-requests
+huggingface_hub
