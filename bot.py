@@ -1,57 +1,63 @@
-import os
 import discord
-import sqlite3
 from discord.ext import commands
+import sqlite3
 from huggingface_hub import InferenceClient
+import os
 
-# === CONFIG ===
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")   # put this in Railway secrets
-HF_TOKEN = os.getenv("HF_TOKEN")             # Hugging Face token
+# ---- CONFIG ----
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")   # put in railway vars
+HF_TOKEN = os.getenv("HF_TOKEN")             # huggingface token
 MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
 
-# === DATABASE ===
-DB_FILE = "chat_memory.db"
+# ---- HF CLIENT ----
+hf_client = InferenceClient(HF_TOKEN)
+
+# ---- DISCORD BOT ----
+intents = discord.Intents.default()
+intents.messages = True
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# ---- DATABASE ----
+DB_FILE = "memory.db"
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS memory (
-            user_id TEXT,
-            username TEXT,
-            message TEXT,
-            response TEXT
-        )
-    """)
+    c.execute("""CREATE TABLE IF NOT EXISTS memory (
+        user_id TEXT,
+        username TEXT,
+        user_msg TEXT,
+        bot_reply TEXT
+    )""")
     conn.commit()
     conn.close()
 
-def save_memory(user_id, username, message, response):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("INSERT INTO memory VALUES (?, ?, ?, ?)", (user_id, username, message, response))
-    conn.commit()
-    conn.close()
+init_db()
 
-def load_memory(user_id, limit=5):
+def load_memory(user_id):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT message, response FROM memory WHERE user_id=? ORDER BY rowid DESC LIMIT ?", (user_id, limit))
+    c.execute("SELECT user_msg, bot_reply FROM memory WHERE user_id=? ORDER BY rowid DESC LIMIT 5", (user_id,))
     rows = c.fetchall()
     conn.close()
-    return rows[::-1]  # oldest first
+    return rows[::-1]  # oldest → newest
 
-# === HF CLIENT ===
-hf_client = InferenceClient(model=MODEL, token=HF_TOKEN)
+def save_memory(user_id, username, user_msg, bot_reply):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("INSERT INTO memory (user_id, username, user_msg, bot_reply) VALUES (?, ?, ?, ?)",
+              (user_id, username, user_msg, bot_reply))
+    conn.commit()
+    conn.close()
 
+# ---- HF QUERY ----
 async def query_hf(user_prompt, history=[], username="user"):
     try:
-        # bot style: lowercase, bored, uninterested
         messages = [
-            {"role": "system", "content": "you are a discord bot that always replies in lowercase, short, and with a bored tone. never use uppercase, emojis, or exclamation marks. act uninterested, like you don't really care."}
+            {"role": "system", "content": f"you are a discord bot that always replies in lowercase, short, and bored. you know the user is named {username}. sometimes say their name, but stay uninterested."}
         ]
 
-        # include chat history
         for (u, b) in history:
             messages.append({"role": "user", "content": f"{username}: {u}"})
             messages.append({"role": "assistant", "content": b})
@@ -68,19 +74,14 @@ async def query_hf(user_prompt, history=[], username="user"):
     except Exception as e:
         return f"⚠️ hf api error: {str(e)}"
 
-# === DISCORD BOT ===
-intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
-
+# ---- DISCORD EVENTS ----
 @bot.event
 async def on_ready():
-    print(f"✅ logged in as {bot.user}")
-    init_db()
+    print(f"logged in as {bot.user}")
 
 @bot.event
 async def on_message(message):
-    if message.author.bot:
+    if message.author == bot.user:
         return
 
     if bot.user.mentioned_in(message):
@@ -92,10 +93,9 @@ async def on_message(message):
         reply = await query_hf(prompt, history, username)
 
         await message.channel.send(reply)
-
         save_memory(user_id, username, prompt, reply)
 
     await bot.process_commands(message)
 
-# === RUN ===
+# ---- RUN ----
 bot.run(DISCORD_TOKEN)
