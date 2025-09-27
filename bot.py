@@ -1,50 +1,36 @@
 import os
 import discord
-import requests
 from discord.ext import commands
+import requests
 
-# Load tokens from environment
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
+MODEL = "microsoft/Phi-3-mini-4k-instruct"  # pick your model
 
-if not DISCORD_TOKEN:
-    raise ValueError("❌ Missing DISCORD_TOKEN environment variable!")
-if not HF_TOKEN:
-    raise ValueError("❌ Missing HF_TOKEN environment variable!")
-
-# Hugging Face API
-API_URL = "https://api-inference.huggingface.co/models/gpt2"
-HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"}
-
-# Create bot
 intents = discord.Intents.default()
-intents.message_content = True
+intents.message_content = True  # enable reading message text
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-def query_huggingface(prompt: str) -> str:
-    payload = {"inputs": prompt}
-
+def query_huggingface(prompt: str):
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+    resp = requests.post(
+        f"https://api-inference.huggingface.co/models/{MODEL}",
+        headers=headers,
+        json={"inputs": prompt},
+    )
+    if resp.status_code != 200:
+        print("HF error:", resp.text)
+        return "⚠️ HF API error"
     try:
-        resp = requests.post(API_URL, headers=HEADERS, json=payload, timeout=30)
-
-        # Check if API returned success
-        if resp.status_code != 200:
-            return f"⚠️ HF API error {resp.status_code}: {resp.text}"
-
-        # Try to decode JSON safely
-        try:
-            data = resp.json()
-        except Exception as e:
-            return f"⚠️ JSON decode failed: {e}\nResponse: {resp.text[:200]}"
-
-        # Hugging Face text response
+        data = resp.json()
         if isinstance(data, list) and "generated_text" in data[0]:
             return data[0]["generated_text"]
-        else:
-            return f"⚠️ Unexpected HF response: {data}"
-
+        elif isinstance(data, dict) and "generated_text" in data:
+            return data["generated_text"]
+        return str(data)
     except Exception as e:
-        return f"⚠️ Request failed: {e}"
+        print("Decode error:", e, resp.text)
+        return "⚠️ Couldn’t parse HF response"
 
 @bot.event
 async def on_ready():
@@ -55,14 +41,15 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    if message.content.startswith("!ask"):
-        prompt = message.content[len("!ask "):].strip()
-        if not prompt:
-            await message.channel.send("Please provide a question after `!ask`.")
+    # Bot only replies when pinged
+    if bot.user.mentioned_in(message):
+        cleaned = message.content.replace(f"<@{bot.user.id}>", "").strip()
+        if not cleaned:
             return
+        reply = query_huggingface(cleaned)
+        await message.reply(reply)
 
-        reply = query_huggingface(prompt)
-        await message.channel.send(reply)
+    # Important: let commands still work
+    await bot.process_commands(message)
 
-# Run bot
 bot.run(DISCORD_TOKEN)
